@@ -10,6 +10,7 @@ let serverAvailable = true;
 let lastHealthCheck = 0;
 const HEALTH_CHECK_INTERVAL = 30000; // 30 seconds
 let initialCheckDone = false;
+let diagnosticsRun = false;
 
 // LocalStorage keys
 const STORAGE_KEYS = {
@@ -52,6 +53,13 @@ const checkServerHealth = async (): Promise<boolean> => {
     
     if (response.ok) {
       const data = await response.json();
+      
+      // Run diagnostics on first successful connection
+      if (!diagnosticsRun && wasInitialCheck) {
+        diagnosticsRun = true;
+        runDiagnostics();
+      }
+      
       if (!serverAvailable || wasInitialCheck) {
         console.log('✅ Server connection established - using Supabase backend');
         console.log('📊 Health check response:', data);
@@ -74,6 +82,66 @@ const checkServerHealth = async (): Promise<boolean> => {
     }
     serverAvailable = false;
     return false;
+  }
+};
+
+// Run diagnostics to check database status
+const runDiagnostics = async () => {
+  try {
+    console.log('🔬 Running database diagnostics...');
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    
+    const response = await fetch(`${API_BASE}/diagnostics`, {
+      headers: {
+        'Authorization': `Bearer ${publicAnonKey}`,
+      },
+      signal: controller.signal,
+    });
+    
+    clearTimeout(timeoutId);
+    
+    const diagnostics = await response.json();
+    
+    console.log('📋 Database Diagnostics Report:');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('Environment Variables:', diagnostics.environment);
+    console.log('Database Status:', diagnostics.database);
+    
+    if (diagnostics.errors && diagnostics.errors.length > 0) {
+      console.error('❌ Errors detected:');
+      diagnostics.errors.forEach((error: string) => {
+        console.error(`  - ${error}`);
+      });
+    }
+    
+    if (diagnostics.database.connected && 
+        diagnostics.database.tableExists && 
+        diagnostics.database.canWrite && 
+        diagnostics.database.canRead) {
+      console.log('✅ Database is fully operational!');
+    } else {
+      console.error('❌ Database has issues - check the errors above');
+      console.error('💡 Possible solutions:');
+      if (!diagnostics.database.tableExists) {
+        console.error('  1. The kv_store_be1ca0a5 table may not exist');
+        console.error('  2. Check your Supabase dashboard and create the table:');
+        console.error('     CREATE TABLE kv_store_be1ca0a5 (');
+        console.error('       key TEXT NOT NULL PRIMARY KEY,');
+        console.error('       value JSONB NOT NULL');
+        console.error('     );');
+      }
+      if (!diagnostics.database.connected) {
+        console.error('  1. Check SUPABASE_URL environment variable');
+        console.error('  2. Check SUPABASE_SERVICE_ROLE_KEY environment variable');
+        console.error('  3. Verify your Supabase project is active');
+      }
+    }
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
+  } catch (error) {
+    console.error('❌ Failed to run diagnostics:', error);
   }
 };
 
@@ -123,10 +191,10 @@ const fetchAPI = async (endpoint: string, options: RequestInit = {}) => {
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
       
-      // If server error, switch to local storage mode
+      // If server error (500-599) or service unavailable (503), switch to local storage mode
       if (response.status >= 500) {
         serverAvailable = false;
-        console.log('⚠️ Server error detected - using localStorage for data persistence');
+        console.log(`⚠️ Server error ${response.status} detected - using localStorage for data persistence`);
       }
       throw new Error(data.error || `API request failed with status ${response.status}`);
     }

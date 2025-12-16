@@ -2,6 +2,7 @@ import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
 import { logger } from "npm:hono/logger";
 import * as kv from "./kv_store.tsx";
+import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
 
 const app = new Hono();
 
@@ -20,6 +21,93 @@ app.use(
     credentials: false,
   }),
 );
+
+// Database diagnostics endpoint
+app.get("/make-server-be1ca0a5/diagnostics", async (c) => {
+  console.log('🔍 Running database diagnostics...');
+  
+  const diagnostics: any = {
+    timestamp: new Date().toISOString(),
+    environment: {
+      supabaseUrl: Deno.env.get('SUPABASE_URL') ? 'Set' : 'Missing',
+      supabaseServiceRoleKey: Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ? 'Set' : 'Missing',
+    },
+    database: {
+      connected: false,
+      tableExists: false,
+      canWrite: false,
+      canRead: false,
+    },
+    errors: [] as string[],
+  };
+
+  try {
+    // Check if we can create a Supabase client
+    const supabaseUrl = Deno.env.get('SUPABASE_URL');
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    
+    if (!supabaseUrl || !supabaseKey) {
+      diagnostics.errors.push('Missing required environment variables');
+      return c.json(diagnostics, 500);
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    
+    // Test database connection by checking if table exists
+    const { data: tables, error: tableError } = await supabase
+      .from('kv_store_be1ca0a5')
+      .select('key')
+      .limit(1);
+    
+    if (tableError) {
+      diagnostics.errors.push(`Database table error: ${tableError.message}`);
+      console.error('❌ Table check failed:', tableError);
+    } else {
+      diagnostics.database.connected = true;
+      diagnostics.database.tableExists = true;
+      console.log('✅ Database table exists and is accessible');
+    }
+
+    // Test write operation
+    try {
+      const testKey = `_diagnostic_test_${Date.now()}`;
+      await kv.set(testKey, { test: true, timestamp: new Date().toISOString() });
+      diagnostics.database.canWrite = true;
+      console.log('✅ Write test passed');
+      
+      // Test read operation
+      const readResult = await kv.get(testKey);
+      if (readResult) {
+        diagnostics.database.canRead = true;
+        console.log('✅ Read test passed');
+      }
+      
+      // Clean up test data
+      await kv.del(testKey);
+      console.log('✅ Delete test passed');
+    } catch (error) {
+      diagnostics.errors.push(`Database operations error: ${error.message}`);
+      console.error('❌ Database operations failed:', error);
+    }
+
+    const success = diagnostics.database.connected && 
+                   diagnostics.database.tableExists && 
+                   diagnostics.database.canWrite && 
+                   diagnostics.database.canRead;
+
+    if (success) {
+      console.log('✅ All diagnostics passed - database is fully operational');
+    } else {
+      console.error('❌ Some diagnostics failed - see details above');
+    }
+
+    return c.json(diagnostics, success ? 200 : 500);
+  } catch (error) {
+    diagnostics.errors.push(`Unexpected error: ${error.message}`);
+    console.error('❌ Diagnostics failed with unexpected error:', error);
+    return c.json(diagnostics, 500);
+  }
+});
 
 // Health check endpoint - critical for frontend server detection
 app.get("/make-server-be1ca0a5/health", (c) => {
@@ -42,7 +130,9 @@ app.post("/make-server-be1ca0a5/mood", async (c) => {
     return c.json({ success: true });
   } catch (error) {
     console.error('Error saving mood:', error);
-    return c.json({ error: `Failed to save mood: ${error?.message || 'Unknown error'}` }, 500);
+    return c.json({ 
+      error: `Database connection failed: ${error?.message || 'Unknown error'}` 
+    }, 503);
   }
 });
 
@@ -56,8 +146,11 @@ app.get("/make-server-be1ca0a5/mood/:userId/:date", async (c) => {
     console.log('Mood data retrieved:', data);
     return c.json(data || null);
   } catch (error) {
-    console.log('Error fetching mood:', error);
-    return c.json({ error: `Failed to fetch mood: ${error?.message || 'Unknown error'}` }, 500);
+    console.error('Error fetching mood:', error);
+    // Return 503 Service Unavailable for database connection issues
+    return c.json({ 
+      error: `Database connection failed: ${error?.message || 'Unknown error'}` 
+    }, 503);
   }
 });
 
@@ -79,7 +172,9 @@ app.post("/make-server-be1ca0a5/meals", async (c) => {
     return c.json({ success: true, data: { meals } });
   } catch (error) {
     console.error('Error saving meal:', error);
-    return c.json({ error: `Failed to save meal: ${error?.message || 'Unknown error'}` }, 500);
+    return c.json({ 
+      error: `Database connection failed: ${error?.message || 'Unknown error'}` 
+    }, 503);
   }
 });
 
@@ -93,7 +188,9 @@ app.get("/make-server-be1ca0a5/meals/:userId/:date", async (c) => {
     return c.json(data || { meals: [] });
   } catch (error) {
     console.error('Error fetching meals:', error);
-    return c.json({ error: `Failed to fetch meals: ${error?.message || 'Unknown error'}` }, 500);
+    return c.json({ 
+      error: `Database connection failed: ${error?.message || 'Unknown error'}` 
+    }, 503);
   }
 });
 
@@ -119,7 +216,9 @@ app.post("/make-server-be1ca0a5/hydration", async (c) => {
     return c.json({ success: true, data: { entries, total: newTotal } });
   } catch (error) {
     console.error('Error saving hydration:', error);
-    return c.json({ error: `Failed to save hydration: ${error?.message || 'Unknown error'}` }, 500);
+    return c.json({ 
+      error: `Database connection failed: ${error?.message || 'Unknown error'}` 
+    }, 503);
   }
 });
 
@@ -133,7 +232,9 @@ app.get("/make-server-be1ca0a5/hydration/:userId/:date", async (c) => {
     return c.json(data || { entries: [], total: 0 });
   } catch (error) {
     console.error('Error fetching hydration:', error);
-    return c.json({ error: `Failed to fetch hydration: ${error?.message || 'Unknown error'}` }, 500);
+    return c.json({ 
+      error: `Database connection failed: ${error?.message || 'Unknown error'}` 
+    }, 503);
   }
 });
 
@@ -147,7 +248,9 @@ app.get("/make-server-be1ca0a5/stats/:userId", async (c) => {
     return c.json(data || { daysActive: 0, currentStreak: 0, avgCalories: 0 });
   } catch (error) {
     console.error('Error fetching stats:', error);
-    return c.json({ error: `Failed to fetch stats: ${error?.message || 'Unknown error'}` }, 500);
+    return c.json({ 
+      error: `Database connection failed: ${error?.message || 'Unknown error'}` 
+    }, 503);
   }
 });
 
@@ -165,7 +268,9 @@ app.post("/make-server-be1ca0a5/stats", async (c) => {
     return c.json({ success: true });
   } catch (error) {
     console.error('Error saving stats:', error);
-    return c.json({ error: `Failed to save stats: ${error?.message || 'Unknown error'}` }, 500);
+    return c.json({ 
+      error: `Database connection failed: ${error?.message || 'Unknown error'}` 
+    }, 503);
   }
 });
 
@@ -179,7 +284,9 @@ app.get("/make-server-be1ca0a5/achievements/:userId", async (c) => {
     return c.json(data || { badges: [] });
   } catch (error) {
     console.error('Error fetching achievements:', error);
-    return c.json({ error: `Failed to fetch achievements: ${error?.message || 'Unknown error'}` }, 500);
+    return c.json({ 
+      error: `Database connection failed: ${error?.message || 'Unknown error'}` 
+    }, 503);
   }
 });
 
@@ -200,7 +307,9 @@ app.post("/make-server-be1ca0a5/achievements", async (c) => {
     return c.json({ success: true, data: { badges } });
   } catch (error) {
     console.error('Error saving achievement:', error);
-    return c.json({ error: `Failed to save achievement: ${error?.message || 'Unknown error'}` }, 500);
+    return c.json({ 
+      error: `Database connection failed: ${error?.message || 'Unknown error'}` 
+    }, 503);
   }
 });
 
