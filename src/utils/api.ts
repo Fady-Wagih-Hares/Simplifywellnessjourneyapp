@@ -5,8 +5,11 @@ const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-be1c
 // Simple user ID for demo - in production, this would come from auth
 const USER_ID = 'demo-user';
 
-// Flag to track if server is available
+// Server availability tracking with periodic health checks
 let serverAvailable = true;
+let lastHealthCheck = 0;
+const HEALTH_CHECK_INTERVAL = 30000; // 30 seconds
+let initialCheckDone = false;
 
 // LocalStorage keys
 const STORAGE_KEYS = {
@@ -15,6 +18,63 @@ const STORAGE_KEYS = {
   HYDRATION: 'wellness_hydration',
   STATS: 'wellness_stats',
   ACHIEVEMENTS: 'wellness_achievements',
+};
+
+// Check server health
+const checkServerHealth = async (): Promise<boolean> => {
+  const now = Date.now();
+  
+  // Always do initial check, then respect interval
+  if (initialCheckDone && now - lastHealthCheck < HEALTH_CHECK_INTERVAL) {
+    return serverAvailable;
+  }
+  
+  lastHealthCheck = now;
+  const wasInitialCheck = !initialCheckDone;
+  initialCheckDone = true;
+  
+  try {
+    if (wasInitialCheck) {
+      console.log('🔍 Checking Supabase server connection...');
+    }
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    
+    const response = await fetch(`${API_BASE}/health`, {
+      headers: {
+        'Authorization': `Bearer ${publicAnonKey}`,
+      },
+      signal: controller.signal,
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (!serverAvailable || wasInitialCheck) {
+        console.log('✅ Server connection established - using Supabase backend');
+        console.log('📊 Health check response:', data);
+      }
+      serverAvailable = true;
+      return true;
+    } else {
+      if (serverAvailable || wasInitialCheck) {
+        console.log(`⚠️ Server health check failed with status ${response.status} - using localStorage for data persistence`);
+      }
+      serverAvailable = false;
+      return false;
+    }
+  } catch (error) {
+    if (serverAvailable || wasInitialCheck) {
+      console.log('⚠️ Server unavailable - using localStorage for data persistence');
+      if (error instanceof Error) {
+        console.log('Error details:', error.message);
+      }
+    }
+    serverAvailable = false;
+    return false;
+  }
 };
 
 // LocalStorage helpers
@@ -37,11 +97,17 @@ const setInStorage = (key: string, value: any) => {
 };
 
 const fetchAPI = async (endpoint: string, options: RequestInit = {}) => {
+  // Check server health before attempting request
+  await checkServerHealth();
+  
   if (!serverAvailable) {
     throw new Error('Server unavailable, using local storage');
   }
 
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    
     const response = await fetch(`${API_BASE}${endpoint}`, {
       ...options,
       headers: {
@@ -49,25 +115,31 @@ const fetchAPI = async (endpoint: string, options: RequestInit = {}) => {
         'Authorization': `Bearer ${publicAnonKey}`,
         ...options.headers,
       },
+      signal: controller.signal,
     });
 
-    const data = await response.json();
-
+    clearTimeout(timeoutId);
+    
     if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      
       // If server error, switch to local storage mode
       if (response.status >= 500) {
         serverAvailable = false;
-        console.log('⚠️ Server unavailable - using localStorage for data persistence');
+        console.log('⚠️ Server error detected - using localStorage for data persistence');
       }
       throw new Error(data.error || `API request failed with status ${response.status}`);
     }
 
+    const data = await response.json();
     return data;
   } catch (error) {
     // Switch to local storage on network errors
-    if (serverAvailable) {
-      serverAvailable = false;
-      console.log('⚠️ Server unavailable - using localStorage for data persistence');
+    if (error instanceof Error && error.name !== 'AbortError') {
+      if (serverAvailable) {
+        serverAvailable = false;
+        console.log('⚠️ Network error - using localStorage for data persistence');
+      }
     }
     throw error;
   }
@@ -233,4 +305,16 @@ export const addAchievement = async (badge: {
     setInStorage(STORAGE_KEYS.ACHIEVEMENTS, achievementsData);
     return { success: true, data: achievementsData };
   }
+};
+
+// Export connection status checker for UI
+export const checkServerConnection = async (): Promise<boolean> => {
+  // Force a fresh check by resetting the timer
+  lastHealthCheck = 0;
+  return await checkServerHealth();
+};
+
+// Export current connection status
+export const isServerConnected = (): boolean => {
+  return serverAvailable;
 };

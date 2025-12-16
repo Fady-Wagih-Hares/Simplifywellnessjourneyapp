@@ -37,13 +37,15 @@ export function HomeScreen({ onFabClick }: HomeScreenProps) {
   };
 
   const handleMoodClick = async (mood: string) => {
+    const previousMood = selectedMood;
     try {
       setSelectedMood(mood);
       await saveMood(mood);
       toast.success('Mood logged! 🌟');
     } catch (error) {
       console.error('Error saving mood:', error);
-      toast.error('Failed to save mood');
+      setSelectedMood(previousMood); // Revert on error
+      // Don't show error toast as fallback is automatic
     }
   };
 
