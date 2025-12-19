@@ -5,9 +5,7 @@ import { HydrationTracker } from './components/HydrationTracker';
 import { JourneyScreen } from './components/JourneyScreen';
 import { ProfileScreen } from './components/ProfileScreen';
 import { SideNav } from './components/SideNav';
-import { ConnectionStatus } from './components/ConnectionStatus';
 import { Toaster } from './components/ui/sonner';
-import { checkServerConnection } from './utils/api';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('home');
@@ -34,7 +32,6 @@ export default function App() {
           {activeTab === 'profile' && <ProfileScreen />}
         </main>
       </div>
-      <ConnectionStatus checkConnection={checkServerConnection} />
       <Toaster position="top-right" />
     </>
   );
